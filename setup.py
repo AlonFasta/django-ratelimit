@@ -2,6 +2,8 @@ from setuptools import setup, find_packages
 
 from ratelimit import __version__
 
+with open("requirements.txt") as f:
+    requirements = [l for l in f.read().splitlines() if l]
 
 setup(
     name='django-ratelimit',
@@ -14,6 +16,7 @@ setup(
     license='Apache Software License',
     packages=find_packages(exclude=['test_settings']),
     python_requires='>=3.4',
+    install_requires=requirements,
     include_package_data=True,
     package_data={'': ['README.rst']},
     classifiers=[

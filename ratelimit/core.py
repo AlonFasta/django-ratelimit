@@ -10,6 +10,7 @@ from django.core.cache import caches
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.module_loading import import_string
 
+from django_lock import lock
 from ratelimit import ALL, UNSAFE
 
 
@@ -115,8 +116,8 @@ def _make_cache_key(group, window, rate, value, methods):
 
 
 def is_ratelimited(request, group=None, fn=None, key=None, rate=None,
-                   method=ALL, increment=False):
-    usage = get_usage(request, group, fn, key, rate, method, increment)
+                   method=ALL, increment=False, delta=1):
+    usage = get_usage(request, group, fn, key, rate, method, increment, delta)
     if usage is None:
         return False
 
@@ -124,7 +125,7 @@ def is_ratelimited(request, group=None, fn=None, key=None, rate=None,
 
 
 def get_usage(request, group=None, fn=None, key=None, rate=None, method=ALL,
-              increment=False):
+              increment=False, delta=1):
     if group is None and fn is None:
         raise ImproperlyConfigured('get_usage must be called with either '
                                    '`group` or `fn` arguments')
@@ -185,26 +186,44 @@ def get_usage(request, group=None, fn=None, key=None, rate=None, method=ALL,
         raise ImproperlyConfigured(
             'Could not understand ratelimit key: %s' % key)
 
+    if not delta:
+        raise ImproperlyConfigured('Ratelimit delta must be specified')
+    elif callable(delta):
+        delta = delta(group, request)
+
+    if isinstance(delta, int) and delta > 0:
+        delta_value = delta
+    else:
+        raise ImproperlyConfigured('Ratelimit delta must be positive integer')
+
     window = _get_window(value, period)
-    initial_value = 1 if increment else 0
+    initial_value = delta_value if increment else 0
 
     cache_name = getattr(settings, 'RATELIMIT_USE_CACHE', 'default')
     cache = caches[cache_name]
     cache_key = _make_cache_key(group, window, rate, value, method)
 
     count = None
+
+    # TODO
+    #  1.Lock should start here, in case if initial value larger than the limit it should be decreased as well.
+    #  2.Failed increment, due to expired key, should be treated
     added = cache.add(cache_key, initial_value, period + EXPIRATION_FUDGE)
     if added:
         count = initial_value
     else:
         if increment:
-            try:
-                # python3-memcached will throw a ValueError if the server is
-                # unavailable or (somehow) the key doesn't exist. redis, on the
-                # other hand, simply returns None.
-                count = cache.incr(cache_key)
-            except ValueError:
-                pass
+            with lock(cache_key):
+                try:
+                    # python3-memcached will throw a ValueError if the server is
+                    # unavailable or (somehow) the key doesn't exist. redis, on the
+                    # other hand, simply returns None.
+                    count = cache.incr(cache_key, delta=delta_value)
+
+                    if delta!= 1 and count > limit:
+                        cache.decr(cache_key, delta=delta)
+                except ValueError:
+                    pass
         else:
             count = cache.get(cache_key, initial_value)
 

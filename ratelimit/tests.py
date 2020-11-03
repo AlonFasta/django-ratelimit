@@ -11,7 +11,6 @@ from ratelimit.decorators import ratelimit
 from ratelimit.exceptions import Ratelimited
 from ratelimit.core import get_usage, is_ratelimited, _split_rate
 
-
 rf = RequestFactory()
 
 
@@ -271,6 +270,7 @@ class RatelimitTests(TestCase):
 
     def test_stacked_decorator(self):
         """Allow @ratelimit to be stacked."""
+
         # Put the shorter one first and make sure the second one doesn't
         # reset request.limited back to False.
         @ratelimit(rate='1/m', block=False, key=lambda x, y: 'min')
@@ -283,6 +283,7 @@ class RatelimitTests(TestCase):
 
     def test_stacked_methods(self):
         """Different methods should result in different counts."""
+
         @ratelimit(rate='1/m', key='ip', method='GET')
         @ratelimit(rate='1/m', key='ip', method='POST')
         def view(request):
@@ -295,6 +296,7 @@ class RatelimitTests(TestCase):
 
     def test_sorted_methods(self):
         """Order of the methods shouldn't matter."""
+
         @ratelimit(rate='1/m', key='ip', method=['GET', 'POST'], group='a')
         def get_post(request):
             return request.limited
@@ -375,6 +377,7 @@ class RatelimitTests(TestCase):
             assert not view(req)
 
 
+# TODO - add more delta cases
 class FunctionsTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -401,6 +404,20 @@ class FunctionsTests(TestCase):
         # Count = 2, 2 > 1.
         assert do_increment(rf.get('/'))
 
+    def test_is_ratelimited_increment_delta(self):
+        do_increment = partial(is_ratelimited, increment=True, rate='5/m',
+                               method=is_ratelimited.ALL, key='ip', group='b',
+                               delta=2)
+
+        # Increments. Does not rate limit because 0 < 3. Count now 2.
+        assert not do_increment(rf.get('/'))
+
+        # Count = 2, 2 < 3. Count now 4.
+        assert not do_increment(rf.get('/'))
+
+        # Count = 4, 4 > 3. Count now 6.
+        assert do_increment(rf.get('/'))
+
     def test_get_usage(self):
         _get_usage = partial(get_usage, method=get_usage.ALL, key='ip',
                              rate='1/m', group='a')
@@ -418,6 +435,18 @@ class FunctionsTests(TestCase):
         usage = _get_usage(rf.get('/'))
 
         self.assertEqual(usage['count'], 2)
+        self.assertEqual(usage['limit'], 1)
+        self.assertLessEqual(usage['time_left'], 60)
+        self.assertTrue(usage['should_limit'])
+
+    def test_get_usage_increment_delta(self):
+        _get_usage = partial(get_usage, method=get_usage.ALL, key='ip',
+                             rate='1/m', group='a', increment=True,
+                             delta=2)
+        _get_usage(rf.get('/'))
+        usage = _get_usage(rf.get('/'))
+
+        self.assertEqual(usage['count'], 4)
         self.assertEqual(usage['limit'], 1)
         self.assertLessEqual(usage['time_left'], 60)
         self.assertTrue(usage['should_limit'])
